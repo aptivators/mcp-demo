@@ -1,0 +1,49 @@
+{
+    "servers": {
+        "medicare_server": {
+            "name": "Medicare MCP Server",
+            "description": "Server providing Medicare datasets and documents",
+            "base_url": "http://127.0.0.1:8000",
+            "transport": "streamable-http",
+            "enabled": true,
+            "timeout": 30,
+            "retry_attempts": 3,
+            "health_endpoint": "/mcp/",
+            "capabilities": {
+                "tools": [
+                    "health",
+                    "get_medicare_dataset_row_count",
+                    "list_medicare_documents",
+                    "get_medicare_document",
+                    "get_medicare_dataset_columns",
+                    "authenticate_user",
+                    "get_medicare_dataset_rows"
+                ],
+                "resources": [
+                    "data://app-status",
+                    "medicare://nursing-home-dataset",
+                    "medicare://deficit-reduction-dataset",
+                    "medicare://datasets"
+                ]
+            }
+        }
+    },
+    "agent": {
+        "name": "Medicare MCP Agent",
+        "description": "AI agent that provides Medicare data insights via MCP servers",
+        "model_config": {
+            "model": "gemini-1.5-flash-latest",
+            "temperature": 0.7,
+            "max_tokens": 4096
+        },
+        "system_prompt": "You are a helpful AI assistant that can access Medicare datasets and documents through MCP servers. Provide accurate, helpful responses about Medicare data, nursing homes, healthcare facilities, and related topics. When users ask about data, leverage the available MCP tools and resources to provide specific, factual information.",
+        "web_service": {
+            "host": "127.0.0.1",
+            "port": 8080,
+            "docs_enabled": true,
+            "cors_origins": [
+                "*"
+            ]
+        }
+    }
+}

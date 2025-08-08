@@ -1,0 +1,7 @@
+Using Medicare Tools
+-------------------
+This document describes how to use the Medicare-related tools available in this MCP server.
+
+- Use the row count tool to get the number of records in a dataset.
+- Use the explanation prompts for dataset guidance.
+- Access resources for specific datasets using their URIs.

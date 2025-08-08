@@ -1,0 +1,7 @@
+Deficit Reduction Act (DRA) Hospital-Acquired Condition Summary
+--------------------------------------------------------------
+This document summarizes the DRA Hospital-Acquired Condition dataset.
+
+- Provides hospital-level measures for four conditions included in the DRA HAC payment provision.
+- Useful for analyzing hospital performance and compliance.
+- Data is updated quarterly.
