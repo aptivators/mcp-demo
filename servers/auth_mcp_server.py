@@ -3,7 +3,7 @@ Example integration of authentication with the MCP server.
 This demonstrates how to add user authentication to the Medicare server.
 """
 
-from auth_utils import get_user_token, get_user_info_and_token_simple
+from auth_utils import get_user_token, get_user_info_and_token
 from fastmcp import FastMCP
 
 # Create the MCP server (same as your existing code)
@@ -15,7 +15,7 @@ def authenticate_user() -> dict:
     Authenticate the current user and return their information and access token.
     This token can be used by the agent for further API calls.
     """
-    result = get_user_info_and_token_simple()
+    result = get_user_info_and_token()
     
     if result["status"] == "success":
         # Return user info but truncate the token for security in logs
@@ -44,13 +44,14 @@ def get_access_token_only() -> dict:
     """
     Get just the access token for API calls.
     Simplified version for when only the token is needed.
+    Uses delegated Microsoft Graph scopes by default.
     """
-    result = get_user_token()
+    result = get_user_token()  # Uses default scopes like ['User.Read']
     
     if result["status"] == "success":
         return {
             "access_token": result["access_token"],
-            "expires_on": result["expires_on"],
+            "expires_on": result["expires_on"],  # ISO formatted datetime string
             "status": "success"
         }
     else:
@@ -58,6 +59,7 @@ def get_access_token_only() -> dict:
             "error": result["error"],
             "status": "failed"
         }
+
 
 @mcp.tool()
 def verify_user_permissions(required_groups: list = None) -> dict:
@@ -70,7 +72,7 @@ def verify_user_permissions(required_groups: list = None) -> dict:
     if required_groups is None:
         required_groups = []
     
-    user_info = get_user_info_and_token_simple()
+    user_info = get_user_info_and_token()
     
     if user_info["status"] != "success":
         return {
@@ -102,14 +104,16 @@ def explain_authentication() -> str:
         "'verify_user_permissions' to check if the user has required access."
     )
 
-async def main():
-    await mcp.run(
-        host="127.0.0.1",
-        port=8001,
-        transport="http"
-    )
-    
+def main():
+    """Start the Medicare MCP server."""
+    try:
+        mcp.run(
+            host="127.0.0.1",
+            port=8001,
+            transport="streamable-http"
+        )
+    except Exception as e:
+        raise
+
 if __name__ == "__main__":
-    import asyncio
-    asyncio.run(main())
-    
+    main()

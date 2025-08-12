@@ -338,6 +338,283 @@ $explainToolsBody = @"
 "@
 Send-MCPRequest -Body $explainToolsBody -TestName "Explain Tools Prompt" -Headers $headers
 
+# Fixed Test Case 11 - SharePoint Query via Medicare MCP server
+# This version is self-contained and doesn't depend on external functions
+
+Write-Host ""
+Write-Host "11. Testing SharePoint query tool via Medicare MCP server..." -ForegroundColor Yellow
+
+# Simple SSE parser function (self-contained)
+function Parse-SimpleSSE {
+    param([string]$Content)
+    $results = @()
+    $events = $Content -split "`r`n`r`n|`n`n"
+    
+    foreach ($event in $events) {
+        if ($event.Trim() -eq "") { continue }
+        $lines = $event -split "`r`n|`n"
+        
+        foreach ($line in $lines) {
+            $line = $line.Trim()
+            if ($line.StartsWith("data:")) {
+                $data = if ($line.StartsWith("data: ")) { $line.Substring(6) } else { $line.Substring(5) }
+                if ($data.Trim() -ne "") {
+                    try {
+                        $jsonData = $data | ConvertFrom-Json
+                        $results += $jsonData
+                    }
+                    catch {
+                        Write-Host "Could not parse SSE data: $data" -ForegroundColor Yellow
+                    }
+                }
+            }
+        }
+    }
+    return ,$results
+}
+
+Write-Host ""
+Write-Host "11. Testing SharePoint query tool via Medicare MCP server..." -ForegroundColor Yellow
+
+# Step 1: Get access token from Auth MCP server
+Write-Host "11a. Getting access token from Auth MCP server..." -ForegroundColor Cyan
+
+# First, we need to initialize the Auth MCP server session too
+$authHeaders = @{
+    'Content-Type' = 'application/json'
+    'Accept' = 'application/json, text/event-stream'
+}
+
+# Initialize Auth MCP session
+$authInitBody = @"
+{
+  "jsonrpc": "2.0",
+  "method": "initialize",
+  "params": {
+    "protocolVersion": "2024-11-05",
+    "clientInfo": {"name": "test-client", "version": "1.0"},
+    "capabilities": {}
+  },
+  "id": 1
+}
+"@
+
+try {
+    Write-Host "Initializing Auth MCP server session..." -ForegroundColor Gray
+    $authInitResponse = Invoke-WebRequest -Uri "http://127.0.0.1:8001/mcp/" -Method Post -Body $authInitBody -Headers $authHeaders
+    
+    # Process the auth init response inline (since Process-Response function may not be in scope)
+    Write-Host "Processing Auth server initialization response..." -ForegroundColor Gray
+    $contentType = $authInitResponse.Headers['Content-Type']
+    Write-Host "Auth server content-type: $contentType" -ForegroundColor Gray
+    
+    if ($contentType -like "*text/event-stream*") {
+        $authInitResult = Parse-SimpleSSE -Content $authInitResponse.Content
+    } elseif ($contentType -like "*application/json*") {
+        $authInitResult = $authInitResponse.Content | ConvertFrom-Json
+    } else {
+        Write-Host "Unknown Auth server response format: $contentType" -ForegroundColor Yellow
+        $authInitResult = $null
+    }
+    
+    # Get session ID for auth server
+    $authSessionId = $null
+    if ($authInitResponse.Headers['Mcp-Session-Id']) {
+        $authSessionId = $authInitResponse.Headers['Mcp-Session-Id']
+        Write-Host "Auth Server Session ID: $authSessionId" -ForegroundColor Cyan
+        $authHeaders['Mcp-Session-Id'] = $authSessionId
+    }
+    
+    # Send initialized notification to auth server
+    $authInitializedBody = @"
+{
+  "jsonrpc": "2.0",
+  "method": "notifications/initialized",
+  "params": {}
+}
+"@
+    Invoke-WebRequest -Uri "http://127.0.0.1:8001/mcp/" -Method Post -Body $authInitializedBody -Headers $authHeaders | Out-Null
+    Start-Sleep -Milliseconds 500
+    
+    Write-Host "Auth MCP server initialized successfully." -ForegroundColor Green
+}
+catch {
+    Write-Host "FAILED: Could not initialize Auth MCP server - $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "Make sure the Auth MCP server is running on port 8001" -ForegroundColor Yellow
+    # Continue without auth for testing other functionality
+    $accessToken = $null
+}
+
+# Now try to get the access token
+if ($authHeaders['Mcp-Session-Id']) {
+    $authTokenBody = @"
+{
+    "jsonrpc": "2.0",
+    "method": "tools/call",
+    "params": {
+        "name": "get_access_token_only",
+        "arguments": {}
+    },
+    "id": 11
+}
+"@
+ 
+    try {
+        Write-Host "Requesting access token from Auth MCP server..." -ForegroundColor Gray
+        $authResponse = Invoke-WebRequest -Uri "http://127.0.0.1:8001/mcp/" -Method Post -Body $authTokenBody -Headers $authHeaders
+        
+        # Process the token response inline
+        Write-Host "Processing token response..." -ForegroundColor Gray
+        $contentType = $authResponse.Headers['Content-Type']
+        Write-Host "Token response content-type: $contentType" -ForegroundColor Gray
+        
+        if ($contentType -like "*text/event-stream*") {
+            $authResult = Parse-SimpleSSE -Content $authResponse.Content
+        } elseif ($contentType -like "*application/json*") {
+            $authResult = @($authResponse.Content | ConvertFrom-Json)
+        } else {
+            Write-Host "Unknown token response format: $contentType" -ForegroundColor Yellow
+            $authResult = $null
+        }
+        
+        Write-Host "Auth response processed. Checking for token..." -ForegroundColor Gray
+        Write-Host "Raw auth result type: $($authResult.GetType().Name)" -ForegroundColor Gray
+        Write-Host "Auth result count: $($authResult.Count)" -ForegroundColor Gray
+        
+        # Debug: Show the full response structure
+        if ($authResult) {
+            Write-Host "Full auth response structure:" -ForegroundColor Gray
+            $authResult | ConvertTo-Json -Depth 5
+        }
+        
+        # Handle different response formats (SSE vs JSON)
+        $accessToken = $null
+        if ($authResult -and $authResult.Count -gt 0) {
+            # For SSE responses, authResult is an array
+            $tokenData = $authResult[0]
+            Write-Host "Token data type: $($tokenData.GetType().Name)" -ForegroundColor Gray
+            
+            # Check different possible response structures
+            if ($tokenData -and $tokenData.result) {
+                Write-Host "Found result object in token data" -ForegroundColor Gray
+                if ($tokenData.result.access_token) {
+                    $accessToken = $tokenData.result.access_token
+                    Write-Host "Found access_token in result.access_token" -ForegroundColor Green
+                } elseif ($tokenData.result.structuredContent -and $tokenData.result.structuredContent.access_token) {
+                    $accessToken = $tokenData.result.structuredContent.access_token
+                    Write-Host "Found access_token in result.structuredContent.access_token" -ForegroundColor Green
+                } elseif ($tokenData.result.token) {
+                    $accessToken = $tokenData.result.token
+                    Write-Host "Found access_token in result.token" -ForegroundColor Green
+                } elseif ($tokenData.result -is [string]) {
+                    $accessToken = $tokenData.result
+                    Write-Host "Found access_token as direct result string" -ForegroundColor Green
+                } else {
+                    Write-Host "Result object found but no recognized token field:" -ForegroundColor Yellow
+                    $tokenData.result | ConvertTo-Json -Depth 3
+                }
+            } elseif ($tokenData -and $tokenData.access_token) {
+                $accessToken = $tokenData.access_token
+                Write-Host "Found access_token directly in response" -ForegroundColor Green
+            } elseif ($tokenData -and $tokenData.token) {
+                $accessToken = $tokenData.token
+                Write-Host "Found token directly in response" -ForegroundColor Green
+            } elseif ($tokenData -and $tokenData.error) {
+                Write-Host "FAILED: Auth server returned error: $($tokenData.error.message)" -ForegroundColor Red
+            } else {
+                Write-Host "FAILED: Could not find access token in response" -ForegroundColor Red
+                Write-Host "Available fields in tokenData:" -ForegroundColor Yellow
+                if ($tokenData) {
+                    $tokenData | Get-Member -MemberType Properties | ForEach-Object { Write-Host "  - $($_.Name)" -ForegroundColor Yellow }
+                }
+            }
+            
+            if ($accessToken) {
+                Write-Host "Successfully extracted access token from Auth MCP server." -ForegroundColor Green
+                Write-Host "Token preview: $($accessToken.Substring(0, [Math]::Min(20, $accessToken.Length)))..." -ForegroundColor Cyan
+            }
+        } else {
+            Write-Host "FAILED: No data returned from Auth MCP server or empty array" -ForegroundColor Red
+        }
+    } catch {
+        Write-Host "FAILED: Error getting token from Auth MCP server - $($_.Exception.Message)" -ForegroundColor Red
+        if ($_.Exception.Response) {
+            $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
+            $responseBody = $reader.ReadToEnd()
+            Write-Host "Error response body: $responseBody" -ForegroundColor Red
+        }
+        $accessToken = $null
+    }
+} else {
+    Write-Host "FAILED: No Auth MCP server session available" -ForegroundColor Red
+    $accessToken = $null
+}
+
+# Step 2: Use token for Medicare MCP server SharePoint query
+if ($accessToken) {
+    Write-Host ""
+    Write-Host "11b. Using token for SharePoint query via Medicare MCP server..." -ForegroundColor Cyan
+    
+    # Convert the SharePoint web URL to REST API endpoint
+    # Original URL: https://aptiveresources1.sharepoint.com/sites/HTG_IHT-0145-ProjectEHRMRapidDecisionMaking/Shared%20Documents/Forms/AllItems.aspx?id=%2Fsites%2FHTG%5FIHT%2D0145%2DProjectEHRMRapidDecisionMaking%2FShared%20Documents%2FInformatics
+    # This points to: /sites/HTG_IHT-0145-ProjectEHRMRapidDecisionMaking/Shared Documents/Informatics folder
+    
+    # Try different REST API approaches:
+    $company = "your-company-name"  # Replace with your actual company name
+    $sitePath = "/sites/your-site-name"  # Replace with your actual site path
+    $folderPath = "Shared Documents/your-folder-name"  # Replace with your actual folder name
+    
+    # Option 1: Get files in the specific folder (try this first)
+    $sharepointUrl = "https://$company.sharepoint.com$sitePath/_api/web/lists/GetByTitle('Documents')"
+    
+    Write-Host "Using SharePoint REST API URL: $sharepointUrl" -ForegroundColor Gray
+    
+    $sharepointBody = @"
+{
+    "jsonrpc": "2.0",
+    "method": "tools/call",
+    "params": {
+        "name": "query_sharepoint",
+        "arguments": {
+            "sharepoint_url": "$sharepointUrl",
+            "access_token": "$accessToken"
+        }
+    },
+    "id": 12
+}
+"@
+    
+    $sharepointResult = Send-MCPRequest -Body $sharepointBody -TestName "SharePoint Query via Medicare Server" -Headers $headers
+    
+    if ($sharepointResult -and $sharepointResult.Data) {
+        Write-Host "SharePoint query completed successfully!" -ForegroundColor Green
+        if ($sharepointResult.Data.Count -gt 0 -and $sharepointResult.Data[0].result) {
+            $result = $sharepointResult.Data[0].result
+            if ($result.status -eq "success") {
+                Write-Host "SharePoint objects found: $($result.objects.Count)" -ForegroundColor Cyan
+                if ($result.objects.Count -gt 0) {
+                    Write-Host "First object preview:" -ForegroundColor Gray
+                    $result.objects[0] | ConvertTo-Json -Depth 2
+                }
+            } else {
+                Write-Host "SharePoint query failed: $($result.error)" -ForegroundColor Yellow
+            }
+        } else {
+            Write-Host "Unexpected SharePoint response format" -ForegroundColor Yellow
+            $sharepointResult.Data | ConvertTo-Json -Depth 4
+        }
+    } else {
+        Write-Host "No data returned from SharePoint query." -ForegroundColor Yellow
+    }
+} else {
+    Write-Host "Skipping SharePoint query due to missing access token." -ForegroundColor Red
+    Write-Host "Possible issues:" -ForegroundColor Yellow
+    Write-Host "- Auth MCP server not running on port 8001" -ForegroundColor Yellow
+    Write-Host "- get_access_token_only tool not available on Auth server" -ForegroundColor Yellow
+    Write-Host "- Authentication failed (user not logged in)" -ForegroundColor Yellow
+    Write-Host "- Network connectivity issues" -ForegroundColor Yellow
+}
+
 Write-Host ""
 Write-Host "=================================================" -ForegroundColor Cyan
 Write-Host "Testing complete!" -ForegroundColor Cyan
