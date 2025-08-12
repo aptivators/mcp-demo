@@ -787,6 +787,8 @@ if __name__ == "__main__":
         "agent:app",
         host=web_config.get('host', '127.0.0.1'),
         port=web_config.get('port', 8080),
+        ssl_certfile="certs/cert.pem",
+        ssl_keyfile="certs/key.pem",
         reload=True,
         log_level="info"
     )

@@ -62,7 +62,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 # Import authentication utilities
 try:
-    from auth_utils import get_user_token, get_user_info_and_token_simple
+    from auth_utils import get_user_info_and_token
     AUTH_AVAILABLE = True
     logger.info("Authentication utilities available")
 except ImportError as e:
@@ -268,7 +268,7 @@ def authenticate_user() -> dict:
         }
     
     try:
-        result = get_user_info_and_token_simple()
+        result = get_user_info_and_token()
         logger.info(f"Authentication result status: {result['status']}")
         
         if result["status"] == "success":
@@ -294,6 +294,41 @@ def authenticate_user() -> dict:
         logger.error(f"Error in authenticate_user: {e}")
         return {"error": str(e), "status": "error"}
 
+@mcp.tool()
+def query_sharepoint(sharepoint_url: str, access_token: str) -> dict:
+    """Query a SharePoint URL using a provided access token and return the list of objects."""
+    from urllib.parse import unquote
+
+    sharepoint_url = unquote(sharepoint_url)
+    logger.info(f"query_sharepoint called for URL: {sharepoint_url}")
+    import requests
+    try:
+        headers = {
+            'Authorization': f'Bearer {unquote(access_token)}',
+            'Accept': 'application/json;odata=verbose'
+        }
+        response = requests.get(sharepoint_url, headers=headers, timeout=15)
+        response.raise_for_status()
+        data = response.json()
+        # Try to extract list of objects from common SharePoint response keys
+        if 'd' in data and 'results' in data['d']:
+            objects = data['d']['results']
+        elif 'value' in data:
+            objects = data['value']
+        else:
+            objects = data
+        logger.info(f"SharePoint query returned {len(objects) if isinstance(objects, list) else 'unknown'} objects.")
+        return {
+            "objects": objects,
+            "status": "success"
+        }
+    except Exception as e:
+        logger.error(f"Error querying SharePoint: {e}")
+        return {
+            "error": str(e),
+            "status": "failed"
+        }
+        
 # Add your prompts
 @mcp.prompt()
 def explain_available_tools() -> str:

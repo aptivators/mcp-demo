@@ -340,3 +340,6 @@ dist
 *.env.local
 docker-compose.override.yml
 .docker/
+
+# local development
+certs/

@@ -3,33 +3,42 @@ Authentication utilities for getting user tokens from Entra ID.
 This module can be imported by other parts of the application.
 """
 
+import os
 from azure.identity import InteractiveBrowserCredential
-import asyncio
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
+from datetime import datetime
+from dotenv import load_dotenv
 import requests
-from msgraph import GraphServiceClient
-import concurrent.futures
 
-def get_user_token(scopes: Optional[list] = None) -> Dict[str, Any]:
+load_dotenv()
+
+def get_user_token(scopes: Optional[List[str]] = None) -> Dict[str, Any]:
     """
-    Synchronous function to get user access token.
+    Synchronously get an access token for Microsoft Graph or SharePoint using interactive login.
     
     Args:
-        scopes: List of scopes to request. Defaults to Microsoft Graph.
+        scopes: List of delegated scopes to request. Defaults to ['Sites.Read.All'] for SharePoint access.
+        client_id: Your Azure AD app's client ID. Required to avoid AADSTS65002 error.
         
     Returns:
-        Dictionary containing token info or error details.
+        Dictionary with access token, expiration, status, and error info if any.
     """
     if scopes is None:
-        scopes = ["https://graph.microsoft.com/.default"]
+        scopes = ["Sites.Read.All"]  # Delegated scope for SharePoint access
+    
+    client_id = os.getenv("ENTRA_CLIENT_ID")
+    if client_id is None:
+        raise ValueError("Entra Client ID must be provided for enterprise authentication.")
     
     try:
-        credential = InteractiveBrowserCredential()
+        credential = InteractiveBrowserCredential(client_id=client_id)
         token_request = credential.get_token(*scopes)
+        
+        expires_on_dt = datetime.fromtimestamp(token_request.expires_on)
         
         return {
             "access_token": token_request.token,
-            "expires_on": token_request.expires_on,
+            "expires_on": expires_on_dt.isoformat(),
             "status": "success",
             "scopes": scopes
         }
@@ -41,96 +50,34 @@ def get_user_token(scopes: Optional[list] = None) -> Dict[str, Any]:
             "scopes": scopes
         }
 
-async def get_user_token_async(scopes: Optional[list] = None) -> Dict[str, Any]:
-    """
-    Async version of get_user_token for use in async contexts.
-    """
-    return get_user_token(scopes)
-
 def get_user_info_and_token() -> Dict[str, Any]:
     """
-    Get both user information and access token.
-    Returns comprehensive user data for agent interface.
+    Get user information and access token using direct REST API calls.
+    Uses get_user_token() for authentication and requests for HTTP calls.
     """
-    try:
-        credential = InteractiveBrowserCredential()
-        client = GraphServiceClient(credential)
-        
-        # Handle existing event loop gracefully
-        try:
-            # Try to get the current running loop
-            current_loop = asyncio.get_running_loop()
-            # If we're in an existing loop, we need to run in a thread           
-            
-            def run_async_in_thread():
-                # Create a new event loop in this thread
-                new_loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(new_loop)
-                try:
-                    user = new_loop.run_until_complete(client.me.get())
-                    groups = new_loop.run_until_complete(client.me.member_of.get())
-                    return user, groups
-                finally:
-                    new_loop.close()
-            
-            # Run the async operations in a separate thread
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                future = executor.submit(run_async_in_thread)
-                user, groups = future.result(timeout=30)  # 30 second timeout
-                
-        except RuntimeError:
-            # No event loop running, we can create our own
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            
-            try:
-                user = loop.run_until_complete(client.me.get())
-                groups = loop.run_until_complete(client.me.member_of.get())
-            finally:
-                loop.close()
-        
-        # Get the token
-        token_request = credential.get_token("https://graph.microsoft.com/.default")
-        
-        return {
-            "display_name": user.display_name,
-            "email": user.user_principal_name,
-            "job_title": user.job_title,
-            "user_id": user.id,
-            "access_token": token_request.token,
-            "token_expires_on": token_request.expires_on,
-            "group_count": len(groups.value) if groups and groups.value else 0,
-            "status": "success"
-        }
-        
-    except Exception as e:
+    # Use delegated scopes for user info and group membership
+    scopes = ["User.Read", "GroupMember.Read.All"]
+    token_result = get_user_token(scopes=scopes)
+    
+    if token_result["status"] != "success":
         return {
             "access_token": None,
-            "error": str(e),
+            "error": token_result.get("error", "Unknown error"),
             "status": "failed"
         }
-
-def get_user_info_and_token_simple() -> Dict[str, Any]:
-    """
-    Get user information and access token using direct REST API calls.
-    This avoids async/event loop issues by using the requests library.
-    """
+    
+    access_token = token_result["access_token"]
+    expires_on = token_result["expires_on"]
+    headers = {
+        'Authorization': f'Bearer {access_token}',
+        'Content-Type': 'application/json'
+    }
+    
     try:
-        credential = InteractiveBrowserCredential()
-        
-        # Get the token first
-        token_request = credential.get_token("https://graph.microsoft.com/.default")
-        access_token = token_request.token
-        
-        # Use the token to make direct REST API calls
-        headers = {
-            'Authorization': f'Bearer {access_token}',
-            'Content-Type': 'application/json'
-        }
-        
+        MS_ME_URL = 'https://graph.microsoft.com/v1.0/me'
         # Get user information
         user_response = requests.get(
-            'https://graph.microsoft.com/v1.0/me',
+            MS_ME_URL,
             headers=headers,
             timeout=10
         )
@@ -139,7 +86,7 @@ def get_user_info_and_token_simple() -> Dict[str, Any]:
         
         # Get group memberships
         groups_response = requests.get(
-            'https://graph.microsoft.com/v1.0/me/memberOf',
+            f'{MS_ME_URL}/memberOf',
             headers=headers,
             timeout=10
         )
@@ -152,14 +99,14 @@ def get_user_info_and_token_simple() -> Dict[str, Any]:
             "job_title": user_data.get("jobTitle"),
             "user_id": user_data.get("id"),
             "access_token": access_token,
-            "token_expires_on": token_request.expires_on,
+            "token_expires_on": expires_on,
             "group_count": len(groups_data.get("value", [])),
             "status": "success"
         }
         
     except Exception as e:
         return {
-            "access_token": None,
+            "access_token": access_token,
             "error": str(e),
             "status": "failed"
         }
