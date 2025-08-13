@@ -10,14 +10,15 @@ import os
 import sys
 from urllib.parse import unquote
 
+from fastapi import FastAPI
 import requests
 from dotenv import load_dotenv
 from fastapi.middleware.cors import CORSMiddleware
 from fastmcp import FastMCP
 
-from .auth_utils import get_user_info_and_token
-from .datasets import api, fetch_dataset, iter_document_filenames, read_document
-from .decorators import require_groups
+from auth_utils import get_user_info_and_token
+from datasets import api, fetch_dataset, iter_document_filenames, read_document
+from decorators import require_groups
 
 # Set up logging
 logging.basicConfig(
@@ -27,18 +28,25 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Initialize FastMCP server
-mcp = FastMCP(name="medicare", version="1.0.0")
+# Create the FastAPI app
+app = FastAPI()
 
-# Add CORS middleware to the FastMCP app if possible
-middleware = CORSMiddleware(
-    mcp,
-    allow_origins=["*"],
+# Add CORS middleware to FastAPI app
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # or specify your allowed origins
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-mcp.add_middleware(middleware)
+
+# Initialize FastMCP server
+mcp = FastMCP(name="medicare", version="1.0.0")
+
+# Mount FastMCP routes onto FastAPI app
+# Assuming FastMCP exposes a router or ASGI app via `mcp.router` or similar
+# (Check FastMCP docs for exact attribute)
+app.mount("/mcp", mcp)  # or app.include_router(mcp.router)
 
 API_NAME = "MEDICARE_API"
 DOCUMENT_CATEGORY = "va"
@@ -283,7 +291,7 @@ def authenticate_user() -> dict:
 
 
 @mcp.tool()
-def query_sharepoint(sharepoint_url: str, access_token: str) -> dict:
+def get_sharepoint_files(sharepoint_url: str, access_token: str) -> dict:
     """Query a SharePoint URL using a provided access token and return the
     list of objects."""
 

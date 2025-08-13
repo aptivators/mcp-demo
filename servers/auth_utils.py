@@ -23,22 +23,29 @@ def get_user_token(scopes: Optional[List[str]] = None) -> Dict[str, Any]:
     Args:
         scopes: List of delegated scopes to request. Defaults to ['Sites.Read.All']
                 for SharePoint access.
-        client_id: Your Azure AD app's client ID. Required to avoid AADSTS65002 error.
 
     Returns:
         Dictionary with access token, expiration, status, and error info if any.
     """
+    tenant_name = os.getenv("SP_COMPANY")
     if scopes is None:
-        scopes = ["Sites.Read.All"]  # Delegated scope for SharePoint access
+         # Delegated scope for SharePoint access
+        scopes = [f"https://{tenant_name}.sharepoint.com/.default"]
 
     client_id = os.getenv("ENTRA_CLIENT_ID")
     if client_id is None:
         raise ValueError(
             "Entra Client ID must be provided for enterprise authentication."
         )
+    tenant_id = os.getenv("ENTRA_TENANT_ID")
+    if tenant_id is None:
+        raise ValueError(
+            "Entra Tenant ID must be provided for enterprise authentication."
+        )
 
     try:
-        credential = InteractiveBrowserCredential(client_id=client_id)
+        # Use the InteractiveBrowserCredential to authenticate
+        credential = InteractiveBrowserCredential(client_id=client_id, tenant_id=tenant_id)
         token_request = credential.get_token(*scopes)
 
         expires_on_dt = datetime.fromtimestamp(token_request.expires_on)
@@ -68,7 +75,7 @@ def get_user_token(scopes: Optional[List[str]] = None) -> Dict[str, Any]:
 
 def get_user_info_and_token() -> Dict[str, Any]:
     """
-    Get user information and access token using direct REST API calls.
+    Get user information and access token using Microsoft Graph API.
     Uses get_user_token() for authentication and requests for HTTP calls.
     """
     # Use delegated scopes for user info and group membership
@@ -90,7 +97,6 @@ def get_user_info_and_token() -> Dict[str, Any]:
     }
 
     try:
-
         # Get user information
         user_response = requests.get(MS_ME_URL, headers=headers, timeout=10)
         user_response.raise_for_status()
@@ -104,12 +110,15 @@ def get_user_info_and_token() -> Dict[str, Any]:
         groups_data = groups_response.json()
 
         return {
-            "display_name": user_data.get("displayName"),
-            "email": user_data.get("userPrincipalName"),
-            "job_title": user_data.get("jobTitle"),
-            "user_id": user_data.get("id"),
+            "user": {
+                "display_name": user_data.get("displayName"),
+                "email": user_data.get("userPrincipalName"),
+                "job_title": user_data.get("jobTitle"),
+                "user_id": user_data.get("id"),
+            },
             "access_token": access_token,
             "token_expires_on": expires_on,
+            "groups": groups_data.get("value", []),
             "group_count": len(groups_data.get("value", [])),
             "status": "success",
         }

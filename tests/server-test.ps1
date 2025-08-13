@@ -554,21 +554,16 @@ if ($authHeaders['Mcp-Session-Id']) {
 if ($accessToken) {
     Write-Host ""
     Write-Host "11b. Using token for SharePoint query via Medicare MCP server..." -ForegroundColor Cyan
-    
-    # Convert the SharePoint web URL to REST API endpoint
-    # Original URL: https://aptiveresources1.sharepoint.com/sites/HTG_IHT-0145-ProjectEHRMRapidDecisionMaking/Shared%20Documents/Forms/AllItems.aspx?id=%2Fsites%2FHTG%5FIHT%2D0145%2DProjectEHRMRapidDecisionMaking%2FShared%20Documents%2FInformatics
-    # This points to: /sites/HTG_IHT-0145-ProjectEHRMRapidDecisionMaking/Shared Documents/Informatics folder
-    
-    # Try different REST API approaches:
-    $company = "your-company-name"  # Replace with your actual company name
-    $sitePath = "/sites/your-site-name"  # Replace with your actual site path
-    $folderPath = "Shared Documents/your-folder-name"  # Replace with your actual folder name
-    
-    # Option 1: Get files in the specific folder (try this first)
-    $sharepointUrl = "https://$company.sharepoint.com$sitePath/_api/web/lists/GetByTitle('Documents')"
-    
+
+    $company = "yourcompany"  # Replace with your actual company name
+    $sitePath = "/sites/your-site"  # Replace with your actual site path
+    $folderRelativeUrl = "Shared Documents/YourFolder"
+
+    # Use the SharePoint REST API to get files in the folder
+    $sharepointUrl = "https://$company.sharepoint.com$sitePath/_api/web/GetFolderByServerRelativeUrl('$folderRelativeUrl')/Files"
+
     Write-Host "Using SharePoint REST API URL: $sharepointUrl" -ForegroundColor Gray
-    
+
     $sharepointBody = @"
 {
     "jsonrpc": "2.0",
@@ -583,9 +578,9 @@ if ($accessToken) {
     "id": 12
 }
 "@
-    
+
     $sharepointResult = Send-MCPRequest -Body $sharepointBody -TestName "SharePoint Query via Medicare Server" -Headers $headers
-    
+
     if ($sharepointResult -and $sharepointResult.Data) {
         Write-Host "SharePoint query completed successfully!" -ForegroundColor Green
         if ($sharepointResult.Data.Count -gt 0 -and $sharepointResult.Data[0].result) {
@@ -614,6 +609,7 @@ if ($accessToken) {
     Write-Host "- Authentication failed (user not logged in)" -ForegroundColor Yellow
     Write-Host "- Network connectivity issues" -ForegroundColor Yellow
 }
+# Final message
 
 Write-Host ""
 Write-Host "=================================================" -ForegroundColor Cyan

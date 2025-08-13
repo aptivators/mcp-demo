@@ -3,13 +3,31 @@ Example integration of authentication with the MCP server.
 This demonstrates how to add user authentication to the Medicare server.
 """
 
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastmcp import FastMCP
 
-from .auth_utils import get_user_info_and_token, get_user_token
+from auth_utils import get_user_info_and_token, get_user_token
+
+# Create the FastAPI app
+app = FastAPI()
+
+# Add CORS middleware to FastAPI app
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # or specify your allowed origins
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Create the MCP server (same as your existing code)
 mcp = FastMCP("MCP Server with Auth Demo", version="1.0.0")
 
+# Mount FastMCP routes onto FastAPI app
+# Assuming FastMCP exposes a router or ASGI app via `mcp.router` or similar
+# (Check FastMCP docs for exact attribute)
+app.mount("/mcp", mcp)  # or app.include_router(mcp.router)
 
 @mcp.tool()
 def authenticate_user() -> dict:

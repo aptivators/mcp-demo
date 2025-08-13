@@ -17,13 +17,37 @@
                     "get_medicare_document",
                     "get_medicare_dataset_columns",
                     "authenticate_user",
-                    "get_medicare_dataset_rows"
+                    "get_medicare_dataset_rows",
+                    "get_sharepoint_files"
                 ],
                 "resources": [
                     "data://app-status",
                     "medicare://nursing-home-dataset",
                     "medicare://deficit-reduction-dataset",
                     "medicare://datasets"
+                ],
+                "prompts": [
+                    "explain_available_tools"
+                ]
+            }
+        },
+        "auth_server": {
+            "name": "Authentication Server",
+            "description": "Server providing network authentication and authorization",
+            "base_url": "http://127.0.0.1:8001",
+            "transport": "streamable-http",
+            "enabled": true,
+            "timeout": 30,
+            "retry_attempts": 3,
+            "health_endpoint": "/mcp/",
+            "capabilities": {
+                "tools": [
+                    "authenticate_user",
+                    "get_access_token_only",
+                    "verify_user_permissions"
+                ],
+                "prompts": [
+                    "explain_authentication"
                 ]
             }
         }
