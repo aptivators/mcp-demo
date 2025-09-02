@@ -7,17 +7,19 @@ import asyncio
 import json
 import logging
 import os
-from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import aiohttp
+from fastapi.params import Query
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 import google.generativeai as genai
 import uvicorn
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+import agent_config
 
 # Load environment variables
 load_dotenv()
@@ -27,7 +29,6 @@ logging.basicConfig(
     level=logging.DEBUG, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
-
 
 # Pydantic models for API
 class QueryRequest(BaseModel):
@@ -45,7 +46,6 @@ class QueryResponse(BaseModel):
     sources: List[str] = []
     mcp_data: Dict[str, Any] = {}
 
-
 class ServerStatusResponse(BaseModel):
     """Response model for querying the status of an MCP server"""
 
@@ -55,37 +55,22 @@ class ServerStatusResponse(BaseModel):
     health: bool
     capabilities: Dict[str, List[str]]
 
+# Pydantic model for tool call arguments
+class ToolCallArguments(BaseModel):
+    """Arguments for calling a tool on an MCP server"""
+    arguments: Optional[Dict[str, Any]] = None
 
-@dataclass
-class MCPServerConfig:
-    """Configuration for an MCP server"""
-
-    name: str
-    description: str
-    base_url: str
-    transport: str
-    enabled: bool
-    timeout: int
-    retry_attempts: int
-    health_endpoint: str
-    capabilities: Dict[str, List[str]]
-
-
-@dataclass
-class AgentConfig:
-    """Configuration for the AI agent"""
-
-    name: str
-    description: str
-    model_config: Dict[str, Any]
-    system_prompt: str
-    web_service: Dict[str, Any]
-
+# Pydantic model for tool call response
+class ToolCallResponse(BaseModel):
+    """Response model for calling a tool on an MCP server"""
+    result: Any
+    server: str
+    tool: str
 
 class MCPStreamingClient:
     """Client for communicating with MCP servers via streaming HTTP"""
 
-    def __init__(self, server_config: MCPServerConfig):
+    def __init__(self, server_config: agent_config.MCPServerConfig):
         self.config = server_config
         self.session: Optional[aiohttp.ClientSession] = None
         self.session_id: Optional[str] = None
@@ -386,41 +371,126 @@ class MCPStreamingClient:
             return [resource["uri"] for resource in result["result"]["resources"]]
         return []
 
-
 class MCPAgent:
     """AI Agent that orchestrates MCP servers via streaming HTTP"""
 
     def __init__(self, config_path: str = "mcp_agent_config.json"):
         self.config_path = config_path
-        self.servers: Dict[str, MCPServerConfig] = {}
-        self.agent_config: AgentConfig = None
+        self.servers: Dict[str, agent_config.MCPServerConfig] = {}
+        self.agent_config: agent_config.AgentConfig = None
         self.gemini_model = None
         self._load_config()
         self._setup_gemini()
 
-    def _load_config(self):
+    def _load_config(self) -> None:
         """Load configuration from JSON file"""
         try:
             agent_config_file = Path(self.config_path)
             if not agent_config_file.exists():
-                raise FileNotFoundError(
-                    f"Configuration file {self.config_path} not found"
-                )
+                raise FileNotFoundError(f"Configuration file {self.config_path} not found")
 
             with open(agent_config_file, "r", encoding="utf-8") as config_file_handle:
                 config_data = json.load(config_file_handle)
 
-            # Load server configurations
-            for server_id, server_data in config_data.get("servers", {}).items():
-                self.servers[server_id] = MCPServerConfig(**server_data)
+            # Parse server configurations
+            servers_data = config_data.get("servers", [])
+            if not isinstance(servers_data, list):
+                raise ValueError("Expected 'servers' to be a list in config")
 
-            # Load agent configuration
+            for server_data in servers_data:
+                try:
+                    server_name = server_data.get("name")
+                    if not server_name:
+                        raise ValueError("Server config missing 'name' field")
+                    
+                    # Parse tools
+                    tools = {}
+                    tools_data = server_data.get("tools", {})
+                    for tool_name, tool_config in tools_data.items():
+                        tools[tool_name] = agent_config.ToolConfig(
+                            description=tool_config.get("description", ""),
+                            keywords=tool_config.get("keywords", [])
+                        )
+                    
+                    # Parse prompts
+                    prompts = {}
+                    prompts_data = server_data.get("prompts", {})
+                    for prompt_name, prompt_config in prompts_data.items():
+                        prompts[prompt_name] = agent_config.PromptConfig(
+                            description=prompt_config.get("description", ""),
+                            template=prompt_config.get("template", "")
+                        )
+                    
+                    # Parse resources
+                    resources = {}
+                    resources_data = server_data.get("resources", {})
+                    for resource_name, resource_config in resources_data.items():
+                        resources[resource_name] = agent_config.ResourceConfig(
+                            description=resource_config.get("description", ""),
+                            url=resource_config.get("url", ""),
+                            keywords=resource_config.get("keywords", [])
+                        )
+                    
+                    # Create server config
+                    server_config = agent_config.MCPServerConfig(
+                        name=server_data.get("name", ""),
+                        description=server_data.get("description", ""),
+                        url=server_data.get("url", ""),
+                        transport=server_data.get("transport", "streamable-http"),
+                        version=server_data.get("version", "1.0.0"),
+                        documentation_url=server_data.get("documentation_url", ""),
+                        tools=tools,
+                        prompts=prompts,
+                        resources=resources,
+                        enabled=server_data.get("enabled", True),
+                        timeout=server_data.get("timeout", 30),
+                        retry_attempts=server_data.get("retry_attempts", 3),
+                        health_endpoint=server_data.get("health_endpoint", "/health")
+                    )
+                    
+                    self.servers[server_name] = server_config
+                    
+                except (TypeError, ValueError, KeyError) as e:
+                    logger.warning("Skipping invalid server config '%s': %s", 
+                                server_data.get("name", "unknown"), e)
+
+            # Parse agent configuration
             agent_data = config_data.get("agent", {})
-            self.agent_config = AgentConfig(**agent_data)
+            
+            # Parse error handling
+            error_handling_data = agent_data.get("error_handling", {})
+            error_handling = agent_config.ErrorHandling(
+                on_error=error_handling_data.get("on_error", "fail"),
+                retry=error_handling_data.get("retry", 0),
+                on_tool_failure=error_handling_data.get("on_tool_failure"),
+                max_retries=error_handling_data.get("max_retries"),
+                retry_delay_ms=error_handling_data.get("retry_delay_ms")
+            )
+            
+            # Parse conditions
+            conditions_data = agent_data.get("conditions", {})
+            conditions = agent_config.ProcessorConditions(
+                only_for_tools=conditions_data.get("only_for_tools"),
+                exclude_for_tools=conditions_data.get("exclude_for_tools"),
+                activate_for_users=conditions_data.get("activate_for_users"),
+                exclude_tools=conditions_data.get("exclude_tools")
+            )
+            
+            # Create agent config
+            self.agent_config = agent_config.AgentConfig(
+                enabled=agent_data.get("enabled", True),
+                order=agent_data.get("order", 1),
+                allowed_tool_names=agent_data.get("allowed_tool_names", []),
+                max_concurrent_requests=agent_data.get("max_concurrent_requests", 10),
+                logging_level=agent_data.get("logging_level", "info"),
+                trace_enabled=agent_data.get("trace_enabled", False),
+                error_handling=error_handling,
+                conditions=conditions
+            )
 
-            logger.info("Loaded configuration for %s MCP servers", len(self.servers))
+            logger.info("Loaded configuration for %d MCP servers", len(self.servers))
 
-        except (FileNotFoundError, json.JSONDecodeError, KeyError) as e:
+        except (FileNotFoundError, json.JSONDecodeError, KeyError, ValueError) as e:
             logger.error("Failed to load configuration: %s", e)
             raise
 
@@ -447,17 +517,17 @@ class MCPAgent:
 
     async def health_check_all(self) -> Dict[str, bool]:
         """Check health of all enabled MCP servers"""
+        async def check_server(sid, sconfig):
+            async with MCPStreamingClient(sconfig) as client:
+                return sid, await client.health_check()
+
         health_status = {}
 
-        tasks = []
-        for server_id, server_config in self.servers.items():
-            if server_config.enabled:
-
-                async def check_server(sid, sconfig):
-                    async with MCPStreamingClient(sconfig) as client:
-                        return sid, await client.health_check()
-
-                tasks.append(check_server(server_id, server_config))
+        tasks = [
+            check_server(server_id, server_config)
+            for server_id, server_config in self.servers.items()
+            if server_config.enabled
+        ]
 
         if tasks:
             results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -478,8 +548,14 @@ class MCPAgent:
             raise ValueError(f"Server {server_id} not found in configuration")
 
         server_config = self.servers[server_id]
-        async with MCPStreamingClient(server_config) as client:
-            return await client.call_tool(tool_name, arguments)
+        arguments = arguments or {}
+
+        try:
+            async with MCPStreamingClient(server_config) as client:
+                return await client.call_tool(tool_name, arguments)
+        except Exception as e:
+            logger.error("Error calling tool '%s' on server '%s': %s", tool_name, server_id, e)
+            raise
 
     async def get_server_resource(
         self, server_id: str, resource_uri: str
@@ -489,8 +565,15 @@ class MCPAgent:
             raise ValueError(f"Server {server_id} not found in configuration")
 
         server_config = self.servers[server_id]
-        async with MCPStreamingClient(server_config) as client:
-            return await client.get_resource(resource_uri)
+        try:
+            async with MCPStreamingClient(server_config) as client:
+                return await client.get_resource(resource_uri)
+        except Exception as e:
+            logger.error("Error getting resource '%s' from server '%s': %s",
+                         resource_uri,
+                         server_id,
+                         e)
+            raise
 
     async def generate_response(
         self, user_query: str, include_mcp_data: bool = True
@@ -507,10 +590,10 @@ Available MCP servers and their capabilities:
 {available_capabilities}
 
 Instructions:
-1. Analyze the user's query to determine if any MCP server tools or resources are needed
-2. If MCP data is needed and available, incorporate it into your response
-3. Provide helpful, accurate responses based on available information
-4. If you cannot access certain data, explain why and suggest alternatives
+1. Analyze the user's query to determine if any MCP server tools or resources are needed.
+2. If MCP data is needed and available, incorporate it into your response.
+3. Provide helpful, accurate responses based on available information.
+4. If you cannot access certain data, explain why and suggest alternatives.
 """
 
             # Generate initial response
@@ -522,7 +605,7 @@ Instructions:
             mcp_data = {}
             sources = []
 
-            if include_mcp_data and self._should_fetch_mcp_data(user_query):
+            if include_mcp_data:
                 mcp_data, sources = await self._fetch_relevant_mcp_data(user_query)
                 if mcp_data:
                     enhanced_prompt = f"""
@@ -588,132 +671,75 @@ Please provide a comprehensive response incorporating the MCP data above:
         capabilities = []
         for server_id, server_config in self.servers.items():
             if server_config.enabled:
-                tools = ", ".join(server_config.capabilities.get("tools", []))
-                resources = ", ".join(server_config.capabilities.get("resources", []))
+                tools = server_config.capabilities.get("tools", [])
+                resources = server_config.capabilities.get("resources", [])
+                tools_str = ", ".join(sorted(tools)) if tools else "None"
+                resources_str = ", ".join(sorted(resources)) if resources else "None"
                 capabilities.append(f"- {server_config.name} ({server_id}):")
-                capabilities.append(f"  Tools: {tools}")
-                capabilities.append(f"  Resources: {resources}")
+                capabilities.append(f"  Tools: {tools_str}")
+                capabilities.append(f"  Resources: {resources_str}")
         return "\n".join(capabilities)
 
-    def _should_fetch_mcp_data(self, user_query: str) -> bool:
-        """Determine if we should fetch MCP data based on the query"""
-        # Keywords that suggest Medicare or healthcare data is needed
-        medicare_keywords = [
-            "medicare",
-            "dataset",
-            "nursing home",
-            "deficit",
-            "document",
-            "data",
-            "healthcare",
-            "medical",
-            "cms",
-            "hospital",
-            "patient",
-            "provider",
-        ]
-        query_lower = user_query.lower()
-        return any(keyword in query_lower for keyword in medicare_keywords)
+    def _resource_relevant_to_query(
+        self, server_id: str, resource_name: str, user_query: str) -> bool:
+        """Check if the user query matches any keywords configured for the resource."""
+        server_config = self.servers.get(server_id)
+        if not server_config:
+            return False
 
-    async def _fetch_relevant_mcp_data(
-        self, user_query: str
-    ) -> tuple[Dict[str, Any], List[str]]:
-        """Fetch relevant data from MCP servers based on the query"""
+        # Access resources dictionary from server config
+        resources_config = server_config.get("resources", {})
+        resource_config = resources_config.get(resource_name, {})
+        keywords = resource_config.get("keywords", [])
+
+        query_lower = user_query.lower()
+        return any(keyword.lower() in query_lower for keyword in keywords)
+
+    def _tool_relevant_to_query(self, server_id: str, tool_name: str, user_query: str) -> bool:
+        """Check if the user query matches any keywords configured for the tool."""
+        server_config = self.servers.get(server_id)
+        if not server_config:
+            return False
+
+        # Access tools dictionary from server config
+        tools_config = server_config.get("tools", {})
+        tool_config = tools_config.get(tool_name, {})
+        keywords = tool_config.get("keywords", [])
+
+        query_lower = user_query.lower()
+        return any(keyword.lower() in query_lower for keyword in keywords)
+
+    async def _fetch_relevant_mcp_data(self, user_query: str) -> tuple[Dict[str, Any], List[str]]:
         mcp_data = {}
         sources = []
 
-        try:
-            # Check if Medicare server is available
-            health_status = await self.health_check_all()
+        health_status = await self.health_check_all()
 
-            if "medicare_server" in health_status and health_status["medicare_server"]:
-                try:
-                    # Fetch relevant Medicare data based on query context
-                    if any(
-                        word in user_query.lower() for word in ["document", "documents"]
-                    ):
-                        docs = await self.call_server_tool(
-                            "medicare_server", "list_medicare_documents"
-                        )
-                        mcp_data["available_documents"] = docs
-                        sources.append("Medicare Documents List")
+        for server_id, server_config in self.servers.items():
+            if not server_config.enabled or not health_status.get(server_id, False):
+                continue
 
-                    if any(
-                        word in user_query.lower()
-                        for word in ["data", "dataset", "nursing", "home"]
-                    ):
-                        row_count = await self.call_server_tool(
-                            "medicare_server",
-                            "get_medicare_dataset_row_count",
-                            {"dataset_name": "nursing_home_dataset"},
-                        )
-                        columns = await self.call_server_tool(
-                            "medicare_server",
-                            "get_medicare_dataset_columns",
-                            {"dataset_name": "nursing_home_dataset"},
-                        )
-                        # Fetch actual data rows (top 10)
-                        rows = await self.call_server_tool(
-                            "medicare_server",
-                            "get_medicare_dataset_rows",
-                            {
-                                "dataset_name": "nursing_home_dataset",
-                                "limit": 10,
-                                "offset": 0,
-                            },
-                        )
-                        logger.debug("Fetched columns: %s", columns)
-                        logger.debug("Fetched rows: %s", rows)
-                        # Robustly extract columns
-                        if isinstance(columns, dict):
-                            if (
-                                "structuredContent" in columns
-                                and "result" in columns["structuredContent"]
-                            ):
-                                columns_list = columns["structuredContent"]["result"]
-                            elif "result" in columns and isinstance(
-                                columns["result"], list
-                            ):
-                                columns_list = columns["result"]
-                            else:
-                                columns_list = []
-                        else:
-                            columns_list = columns if isinstance(columns, list) else []
-                        # Robustly extract rows
-                        if isinstance(rows, dict):
-                            if (
-                                "structuredContent" in rows
-                                and "result" in rows["structuredContent"]
-                            ):
-                                rows_list = rows["structuredContent"]["result"]
-                            elif "result" in rows and isinstance(rows["result"], list):
-                                rows_list = rows["result"]
-                            else:
-                                rows_list = []
-                        else:
-                            rows_list = rows if isinstance(rows, list) else []
-                        mcp_data["nursing_home_dataset"] = {
-                            "row_count": row_count,
-                            "columns": columns_list[:10],
-                            "rows": rows_list,
-                        }
-                        sources.append("Medicare Nursing Home Dataset")
+            # Example: check if any tool keywords match user query
+            for tool_name in server_config.capabilities.get("tools", []):
+                if self._tool_relevant_to_query(server_id, tool_name, user_query):
+                    try:
+                        result = await self.call_server_tool(server_id, tool_name)
+                        mcp_data.setdefault(server_id, {})[tool_name] = result
+                        sources.append(f"{server_config.name} - {tool_name}")
+                    except (RuntimeError, ValueError, aiohttp.ClientError) as e:
+                        logger.warning("Failed to fetch %s from %s: %s", tool_name, server_id, e)
 
-                    # Add health status for transparency
-                    mcp_data["server_status"] = "healthy"
-
-                except (RuntimeError, ValueError) as e:
-                    logger.warning("Could not fetch Medicare data: %s", e)
-                    mcp_data["server_status"] = f"error: {str(e)}"
-            else:
-                mcp_data["server_status"] = "unavailable"
-
-        except (RuntimeError, ValueError) as e:
-            logger.error("Error fetching MCP data: %s", e)
-            mcp_data["error"] = str(e)
+            # Similarly for resources if applicable
+            for resource_uri in server_config.capabilities.get("resources", []):
+                if self._tool_relevant_to_query(server_id, resource_uri, user_query):
+                    try:
+                        result = await self.get_server_resource(server_id, resource_uri)
+                        mcp_data.setdefault(server_id, {})[resource_uri] = result
+                        sources.append(f"{server_config.name} - {resource_uri}")
+                    except (RuntimeError, ValueError, aiohttp.ClientError) as e:
+                        logger.warning("Failed to fetch %s from %s: %s", resource_uri, server_id, e)
 
         return mcp_data, sources
-
 
 # Create FastAPI application
 def create_app() -> FastAPI:
@@ -763,12 +789,12 @@ def create_app() -> FastAPI:
         """Health check endpoint"""
         try:
             server_health = await agent.health_check_all()
-            overall_healthy = any(server_health.values()) if server_health else False
+            overall_healthy = all(server_health.values()) if server_health else False
 
             return {
                 "status": "healthy" if overall_healthy else "degraded",
                 "servers": server_health,
-                "timestamp": asyncio.get_event_loop().time(),
+                "timestamp": datetime.now(timezone.utc).isoformat() + "Z"
             }
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e)) from e
@@ -788,6 +814,8 @@ def create_app() -> FastAPI:
                         status="enabled" if server_config.enabled else "disabled",
                         health=health_status.get(server_id, False),
                         capabilities=server_config.capabilities,
+                        url=server_config.url,            # Added URL
+                        version=server_config.version     # Added version
                     )
                 )
 
@@ -799,8 +827,15 @@ def create_app() -> FastAPI:
     async def query_agent(request: QueryRequest):
         """Send a query to the AI agent"""
         try:
+            # Basic sanitization: strip whitespace and limit length
+            sanitized_query = request.query.strip()
+            if len(sanitized_query) == 0:
+                raise HTTPException(status_code=400, detail="Query cannot be empty")
+            if len(sanitized_query) > 1000:
+                raise HTTPException(status_code=400, detail="Query too long")
+
             result = await agent.generate_response(
-                request.query, include_mcp_data=request.include_mcp_data
+                sanitized_query, include_mcp_data=request.include_mcp_data
             )
 
             return QueryResponse(**result)
@@ -813,7 +848,6 @@ def create_app() -> FastAPI:
                 e,
                 exc_info=True,
             )
-            # Detect common non-serializable object issues (like 'slice')
             error_str = str(e)
             if "slice(" in error_str:
                 user_message = (
@@ -828,19 +862,18 @@ def create_app() -> FastAPI:
                 )
             raise HTTPException(status_code=500, detail=user_message) from e
 
-    @fastapi_app.post("/servers/{server_id}/tools/{tool_name}")
-    async def call_server_tool(
-        server_id: str, tool_name: str, arguments: Dict[str, Any] = None
-    ):
+    @fastapi_app.post("/servers/{server_id}/tools/{tool_name}", response_model=ToolCallResponse)
+    async def call_server_tool(server_id: str, tool_name: str, arguments: ToolCallArguments):
         """Directly call a tool on a specific MCP server"""
         try:
-            result = await agent.call_server_tool(server_id, tool_name, arguments)
-            return {"result": result, "server": server_id, "tool": tool_name}
+            args_dict = arguments.arguments or {}
+            result = await agent.call_server_tool(server_id, tool_name, args_dict)
+            return ToolCallResponse(result=result, server=server_id, tool=tool_name)
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e)) from e
 
     @fastapi_app.get("/servers/{server_id}/resources")
-    async def get_server_resource(server_id: str, uri: str):
+    async def get_server_resource(server_id: str, uri: str = Query(...)):
         """Get a resource from a specific MCP server"""
         try:
             result = await agent.get_server_resource(server_id, uri)
@@ -848,11 +881,8 @@ def create_app() -> FastAPI:
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e)) from e
 
-    return fastapi_app
-
-
 # Create the app instance
-app = create_app()
+app: FastAPI = create_app()
 
 if __name__ == "__main__":
     # Load agent config to get web service settings
@@ -867,6 +897,6 @@ if __name__ == "__main__":
         port=web_config.get("port", 8080),
         ssl_certfile="certs/cert.pem",
         ssl_keyfile="certs/key.pem",
-        reload=True,
+        reload=False,
         log_level="info",
     )

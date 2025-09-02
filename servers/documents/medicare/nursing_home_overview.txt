@@ -1,7 +1,0 @@
-Nursing Home Dataset Overview
-----------------------------
-This document provides an overview of the Medicare Nursing Home dataset.
-
-- Contains facility-level information about active residents in nursing homes.
-- Useful for analyzing trends, comparing facilities, and answering questions about nursing home populations.
-- Updated monthly.

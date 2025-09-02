@@ -1,72 +1,221 @@
 {
-    "servers": {
-        "medicare_server": {
-            "name": "Medicare MCP Server",
-            "description": "Server providing Medicare datasets and documents",
-            "base_url": "http://127.0.0.1:8000",
+    "servers": [
+        {
+            "name": "auth_mcp",
+            "description": "Authentication server providing service tokens and identity management",
+            "url": "https://auth.example.com/mcp",
             "transport": "streamable-http",
-            "enabled": true,
-            "timeout": 30,
-            "retry_attempts": 3,
-            "health_endpoint": "/mcp/",
-            "capabilities": {
-                "tools": [
-                    "health",
-                    "get_medicare_dataset_row_count",
-                    "list_medicare_documents",
-                    "get_medicare_document",
-                    "get_medicare_dataset_columns",
-                    "authenticate_user",
-                    "get_medicare_dataset_rows",
-                    "get_sharepoint_files"
-                ],
-                "resources": [
-                    "data://app-status",
-                    "medicare://nursing-home-dataset",
-                    "medicare://deficit-reduction-dataset",
-                    "medicare://datasets"
-                ],
-                "prompts": [
-                    "explain_available_tools"
-                ]
+            "version": "1.0.0",
+            "documentation_url": "https://docs.example.com/auth-mcp",
+            "tools": {
+                "get_service_token": {
+                    "description": "Obtain service authentication tokens",
+                    "keywords": [
+                        "token",
+                        "authentication",
+                        "auth",
+                        "login",
+                        "service token"
+                    ]
+                },
+                "health": {
+                    "description": "Health check tool returning server status and timestamp",
+                    "keywords": [
+                        "health",
+                        "status",
+                        "ping",
+                        "check"
+                    ]
+                }
+            },
+            "prompts": {},
+            "resources": {}
+        },
+        {
+            "name": "jira_mcp",
+            "description": "Jira integration server handling OAuth consent and issue queries",
+            "url": "https://jira.example.com/mcp",
+            "transport": "streamable-http",
+            "version": "1.2.0",
+            "documentation_url": "https://docs.example.com/jira-mcp",
+            "tools": {
+                "get_jira_consent_interactive": {
+                    "description": "Interactive OAuth consent flow for Jira",
+                    "keywords": [
+                        "consent",
+                        "oauth",
+                        "jira",
+                        "authorization"
+                    ]
+                },
+                "get_my_requests": {
+                    "description": "Fetch Jira requests accessible to the authenticated user",
+                    "keywords": [
+                        "requests",
+                        "jira",
+                        "issues",
+                        "my requests"
+                    ]
+                },
+                "custom_board_query": {
+                    "description": "Custom Jira board query tool",
+                    "keywords": [
+                        "board",
+                        "jira",
+                        "query",
+                        "issues"
+                    ]
+                },
+                "health": {
+                    "description": "Health check tool returning server status and timestamp",
+                    "keywords": [
+                        "health",
+                        "status",
+                        "ping",
+                        "check"
+                    ]
+                }
+            },
+            "prompts": {
+                "jira_issue_summary": {
+                    "description": "Prompt template to summarize Jira issues",
+                    "template": "Summarize the following Jira issues: {{issues}}"
+                }
+            },
+            "resources": {
+                "jira_api_docs": {
+                    "description": "Official Jira Cloud REST API documentation",
+                    "url": "https://developer.atlassian.com/cloud/jira/platform/rest/v3/intro/",
+                    "keywords": [
+                        "jira",
+                        "api",
+                        "documentation",
+                        "rest"
+                    ]
+                }
             }
         },
-        "auth_server": {
-            "name": "Authentication Server",
-            "description": "Server providing network authentication and authorization",
-            "base_url": "http://127.0.0.1:8001",
+        {
+            "name": "sharepoint_mcp",
+            "description": "SharePoint integration server for querying files and metadata",
+            "url": "https://sharepoint.example.com/mcp",
             "transport": "streamable-http",
+            "version": "1.1.0",
+            "documentation_url": "https://docs.example.com/sharepoint-mcp",
+            "tools": {
+                "get_sharepoint_files": {
+                    "description": "Query SharePoint files and metadata",
+                    "keywords": [
+                        "sharepoint",
+                        "files",
+                        "metadata",
+                        "documents"
+                    ]
+                },
+                "health": {
+                    "description": "Health check tool returning server status and timestamp",
+                    "keywords": [
+                        "health",
+                        "status",
+                        "ping",
+                        "check"
+                    ]
+                }
+            },
+            "prompts": {
+                "sharepoint_file_list": {
+                    "description": "Prompt template to list SharePoint files",
+                    "template": "List the SharePoint files with metadata: {{files}}"
+                }
+            },
+            "resources": {
+                "sharepoint_api_docs": {
+                    "description": "Microsoft Graph SharePoint API documentation",
+                    "url": "https://docs.microsoft.com/en-us/graph/api/resources/sharepoint?view=graph-rest-1.0",
+                    "keywords": [
+                        "sharepoint",
+                        "api",
+                        "documentation",
+                        "graph"
+                    ]
+                }
+            }
+        }
+    ],
+    "preprocessors": {
+        "auth_token_injector": {
+            "description": "Injects authentication tokens into outgoing requests",
+            "type": "middleware",
+            "order": 1,
             "enabled": true,
-            "timeout": 30,
-            "retry_attempts": 3,
-            "health_endpoint": "/mcp/",
-            "capabilities": {
-                "tools": [
-                    "authenticate_user",
-                    "get_access_token_only",
-                    "verify_user_permissions"
+            "error_handling": {
+                "on_error": "fail",
+                "retry": 0
+            },
+            "logging": {
+                "level": "debug",
+                "trace": true
+            },
+            "conditions": {
+                "only_for_tools": [
+                    "get_my_requests",
+                    "custom_board_query"
                 ],
-                "prompts": [
-                    "explain_authentication"
+                "exclude_for_tools": [
+                    "health_check"
+                ]
+            }
+        }
+    },
+    "postprocessors": {
+        "response_formatter": {
+            "description": "Formats MCP server responses for display",
+            "type": "formatter",
+            "order": 1,
+            "enabled": true,
+            "error_handling": {
+                "on_error": "log_and_continue",
+                "retry": 1
+            },
+            "logging": {
+                "level": "info",
+                "trace": false
+            },
+            "conditions": {
+                "only_for_tools": [
+                    "get_service_token",
+                    "get_my_requests",
+                    "get_sharepoint_files"
                 ]
             }
         }
     },
     "agent": {
-        "name": "Medicare MCP Agent",
-        "description": "AI agent that provides Medicare data insights via MCP servers",
-        "model_config": {
-            "model": "gemini-1.5-flash-latest",
-            "temperature": 0.7,
-            "max_tokens": 4096
+        "enabled": true,
+        "order": 1,
+        "allowed_tool_names": [
+            "get_service_token",
+            "get_jira_consent_interactive",
+            "get_my_requests",
+            "custom_board_query",
+            "get_sharepoint_files",
+            "health_check"
+        ],
+        "max_concurrent_requests": 10,
+        "logging_level": "info",
+        "trace_enabled": false,
+        "error_handling": {
+            "on_tool_failure": "retry",
+            "max_retries": 2,
+            "retry_delay_ms": 500
         },
-        "system_prompt": "You are a helpful AI assistant that can access Medicare datasets and documents through MCP servers. Provide accurate, helpful responses about Medicare data, nursing homes, healthcare facilities, and related topics. When users ask about data, leverage the available MCP tools and resources to provide specific, factual information.",
-        "web_service": {
-            "host": "127.0.0.1",
-            "port": 8080,
-            "docs_enabled": true,
-            "cors_origins": [
-                "*"
+        "conditions": {
+            "activate_for_users": [
+                "user1@example.com",
+                "user2@example.com"
+            ],
+            "exclude_tools": [
+                "health_check"
             ]
         }
     }
